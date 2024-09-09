@@ -4,7 +4,7 @@ from problems.vqls import vqls_demo, vqls_paper
 
 
 
-def qaoa(quantum_circuit, ansatz='', cost=False, gradient=False):
+def max_cut(quantum_circuit, ansatz='', cost=False, gradient=False):
     problem = qaoa_class
     if cost and gradient:
         raise ValueError('Cannot return both cost/reward and gradient descent result')
