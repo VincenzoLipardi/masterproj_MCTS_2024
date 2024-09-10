@@ -79,17 +79,17 @@ class Node:
         # If we are rolling out we don't want to add the stop action in the rollout
         stop = self.stop_is_done if not roll_out else True
 
+        new_qc, action = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, prob_choice, stop)
+        new_qc = new_qc(qc)
+        temporary_prob_choice = {'a': 50, 's': 50, 'c': 0, 'd': 0}
+        if new_qc is None:
+            """If here, MCTS chose to change parameters when there are no parametrized gates,  or delete in a very shallow circuit. Then let's prevent this by allowing only the adding and swapping action"""
+            new_qc, action = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, temporary_prob_choice, stop)
+            new_qc = new_qc(qc)
+
 
         def det_stop():
-
-            new_qc, action = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, prob_choice, stop)
-            new_qc = new_qc(qc)
-            if new_qc is None:
-                # It chose to change parameters, but there are no parametrized gates. Or delete in a very shallow circuit,
-                # then let's prevent this by allowing only the adding and swapping action
-                temporary_prob_choice = {'a': 50, 's': 50, 'c': 0, 'd': 0}
-                new_qc, action = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, temporary_prob_choice, stop)
-                new_qc = new_qc(qc)
+            # Uncomment the two lines below if you want to be sure that the children node is different form its parent node
             """while check_equivalence(qc, new_qc):
                 new_qc = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, prob_choice, stop)(qc)"""
             new_node = node_from_qc(new_qc, parent_node=self, roll_out=roll_out)
@@ -98,9 +98,6 @@ class Node:
             return new_node
 
         def prob_stop():
-
-            new_qc, action = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, prob_choice, stop)
-            new_qc = new_qc(qc)
             if new_qc == 'stop':
                 # It means that get_legal_actions returned the STOP action, then we define this node as Terminal
                 self.isTerminal = True
@@ -108,16 +105,6 @@ class Node:
                 self.counter_cx = self.state.circuit.count_ops().get('cx', 0)
                 return self
             else:
-
-                if new_qc is None:
-                    # It chose to change parameters, but there are no parametrized gates. Or delete in a very shallow circuit,
-                    # then let's prevent this by allowing only the adding and swapping action
-                    temporary_prob_choice = {'a': 50, 's': 50, 'c': 0, 'd': 0}
-                    new_qc, action = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, temporary_prob_choice, stop)
-
-
-                    new_qc = new_qc(qc)
-
                 if isinstance(new_qc, QuantumCircuit):
                     new_state = Circuit(4, 1).building_state(new_qc)
                     new_node = Node(new_state, max_depth=self.max_depth, parent=self)
@@ -130,8 +117,10 @@ class Node:
                     raise TypeError("new_qc must be a QuantumCircuit object in Qiskit")
 
         if stop_deterministic:
+            # This is used if the move stop is not allowed
             return det_stop()
         else:
+            # This is used if the move stop is allowed
             return prob_stop()
 
     def best_child(self, criteria):
