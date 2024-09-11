@@ -197,14 +197,16 @@ def modify_prob_choice(dictionary: dict, len_qc: int) -> dict:
 
 def commit(epsilon: float, current_node: Node, criteria: str) -> Node:
     # It commits to the best action if the node has explored enough
-    if epsilon is not None:
-        if random.uniform(0, 1) >= epsilon:
-            return current_node.best_child(criteria=criteria)
     return current_node.best_child(criteria=criteria)
+    # if epsilon is not None:
+    #     if random.uniform(0, 1) >= epsilon:
+    #         return current_node.best_child(criteria=criteria)
+    # return current_node.best_child(criteria=criteria)
 
 def mcts(root: Node, budget: int, evaluation_function, criteria: str, rollout_type: str, roll_out_steps: int, branches, choices: dict, epsilon: float, stop_deterministic: bool, ucb_value: float = 0.4, pw_C=1, pw_alpha=0.3,
          verbose: bool = False) -> dict:
 
+    # a = add gate, d = delete gate, s = swap gates, c = change parameter
     prob_choice = {'a': 100, 'd': 0, 's': 0, 'c': 0}
     original_root = root
     if verbose:
@@ -216,6 +218,8 @@ def mcts(root: Node, budget: int, evaluation_function, criteria: str, rollout_ty
     for epoch_counter in range(budget):
         current_node = root
 
+        # budget/20 means we permanently commit to best option once a node has used 5% of the total search budget.
+        # TODO make this a parameter
         if current_node.visits > budget/20 and len(current_node.children) > 2:
             root = commit(epsilon, current_node, criteria)
             if verbose:
