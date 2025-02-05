@@ -1,5 +1,6 @@
 import random
 import numpy as np
+import pandas as pd
 from structure import Circuit, GateSet
 from qiskit import QuantumCircuit
 
@@ -30,11 +31,11 @@ class Node:
         # Position of the node in terms of tree depth. integer
         self.tree_depth = 0 if parent is None else parent.tree_depth + 1
         # Gate set
-        self.gate_set = 'continuous'
+        self.gate_set = 'continuous'  # TODO: Check into this
         # Control on the stop action of the node
         self.stop_is_done = False
         # Specify the action that created it, None only for root and stop nodes
-        self.action = None
+        self.action = None  # TODO: This is not used in group by gates
         # Counts the Controlled-NOT gates in the circuit
         self.counter_cx = self.state.circuit.count_ops().get('cx', 0)
 
@@ -81,6 +82,11 @@ class Node:
 
         new_qc, action = parent.state.get_legal_action(GateSet(self.gate_set), self.max_depth, prob_choice, stop)
         new_qc = new_qc(qc)
+        if new_qc == 'stop':
+            self.isTerminal = True
+            self.stop_is_done = True
+            self.counter_cx = self.state.circuit.count_ops().get('cx', 0)
+            return self
         temporary_prob_choice = {'a': 50, 's': 50, 'c': 0, 'd': 0}
         if new_qc is None:
             """If here, MCTS chose to change parameters when there are no parametrized gates,  or delete in a very shallow circuit. Then let's prevent this by allowing only the adding and swapping action"""
@@ -143,6 +149,7 @@ def node_from_qc(quantum_circuit: QuantumCircuit, parent_node: Node, roll_out: b
     if isinstance(quantum_circuit, QuantumCircuit):
         new_state = Circuit(4, 1).building_state(quantum_circuit)
         new_child = Node(new_state, max_depth=parent_node.max_depth, parent=parent_node)
+        new_child.action = parent_node.action 
         if not roll_out:
             parent_node.children.append(new_child)
         return new_child
@@ -203,19 +210,75 @@ def commit(epsilon: float, current_node: Node, criteria: str) -> Node:
     #         return current_node.best_child(criteria=criteria)
     # return current_node.best_child(criteria=criteria)
 
-def mcts(root: Node, budget: int, evaluation_function, criteria: str, rollout_type: str, roll_out_steps: int, branches, choices: dict, epsilon: float, stop_deterministic: bool, ucb_value: float = 0.4, pw_C=1, pw_alpha=0.3,
-         verbose: bool = False) -> dict:
+def save_data(node: Node, spend: int, epoch: int, parent_value: float, root_value: float = 0) -> list:
+    """
+    Collects the data to be put in the dataframe
+
+    return: ["budget", "expandedBy", "objectiveValue","epoch", "treeDepth", "parentValue", "H","Rx","Ry","Rz","Cx"]
+    """
+
+    gate_counts = dict(node.state.circuit.count_ops())
+    return [
+        spend,
+        node.action,
+        node.value / node.visits if node.parent else root_value,
+        epoch,
+        node.tree_depth,
+        parent_value,
+        gate_counts["h"] if "h" in gate_counts.keys() else 0,
+        gate_counts["rx"] if "rx" in gate_counts.keys() else 0,
+        gate_counts["ry"] if "ry" in gate_counts.keys() else 0,
+        gate_counts["rz"] if "rz" in gate_counts.keys() else 0,
+        gate_counts["cx"] if "cx" in gate_counts.keys() else 0,
+    ]
+
+def mcts(
+        root: Node, 
+        budget: int, 
+        evaluation_function, # Based on the quantum problem
+        choices: dict,
+        stop_deterministic: bool, 
+        # Default parameters
+        criteria: str = "value", 
+        rollout_type: str = "classic", 
+        roll_out_steps: int = 0, 
+        branches=False, 
+        epsilon: float = None, 
+        ucb_value: float = 0.4, 
+        pw_C=1, 
+        pw_alpha=0.3,
+        verbose: bool = False
+        ) -> dict:
+    best_node = root
+    best_value = float("-inf")
 
     # a = add gate, d = delete gate, s = swap gates, c = change parameter
     prob_choice = {'a': 100, 'd': 0, 's': 0, 'c': 0}
     original_root = root
+    objective_values = pd.DataFrame(
+        columns=[
+            "budget",
+            "expandedBy",
+            "objectiveValue",
+            "epoch",
+            "treeDepth",
+            "parentValue",
+            "H",
+            "Rx",
+            "Ry",
+            "Rz",
+            "Cx",
+        ]
+    )
     if verbose:
         print('Root Node:\n', root)
 
-    evaluate(root, evaluation_function)
+    result = evaluate(root, evaluation_function)
     root.visits = 1
-
-    for epoch_counter in range(budget):
+    epoch_counter = 0
+    objective_values.loc[len(objective_values)] = save_data(root, epoch_counter, epoch_counter, parent_value=0, root_value=result)
+    while budget > 0:
+        epoch_counter += 1
         current_node = root
 
         # budget/20 means we permanently commit to best option once a node has used 5% of the total search budget.
@@ -247,6 +310,7 @@ def mcts(root: Node, budget: int, evaluation_function, criteria: str, rollout_ty
             if isinstance(roll_out_steps, int):
                 leaf_node = rollout(current_node, steps=roll_out_steps)
                 result = evaluate(leaf_node, evaluation_function)
+                budget -= 1
 
                 if roll_out_steps > 1 and rollout_type != "classic":
                     node_to_evaluate = leaf_node
@@ -265,28 +329,45 @@ def mcts(root: Node, budget: int, evaluation_function, criteria: str, rollout_ty
 
         else:
             result = evaluate(current_node, evaluation_function)
-
+            budget -= 1
         if verbose:
             print('Reward: ', result)
 
         # Backpropagation
         backpropagate(current_node, result)
 
+        # update best value
+        if result > best_value:
+            best_value = result
+            best_node = current_node
+
+        # Save data
+        parent_value = current_node.parent.value/current_node.parent.visits if current_node.parent is not None else None
+        objective_values.loc[len(objective_values)] = save_data(current_node, epoch_counter, epoch_counter, parent_value=parent_value)
+
         n_qubits = len(current_node.state.circuit.qubits)
         if current_node.tree_depth == 2*n_qubits:
             prob_choice = choices
 
     # Return the best
-    best_node = original_root
+    best_greedy_node = original_root
 
     # path = []
     qc_path = []
     children, value, visits = [], [], []
-    while not best_node.isTerminal and len(best_node.children) >= 1:
+    while not best_greedy_node.isTerminal and len(best_greedy_node.children) >= 1:
         # path.append(best_node)
-        qc_path.append(best_node.state.circuit)
-        children.append(len(best_node.children))
-        value.append(best_node.value)
-        visits.append(best_node.visits)
-        best_node = best_node.best_child(criteria=criteria)
-    return {'qc': qc_path, 'children': children, 'visits': visits, 'value': value}
+        qc_path.append(best_greedy_node.state.circuit)
+        children.append(len(best_greedy_node.children))
+        value.append(best_greedy_node.value)
+        visits.append(best_greedy_node.visits)
+        best_greedy_node = best_greedy_node.best_child(criteria=criteria)
+
+    return {
+        "qc": qc_path,
+        "children": children,
+        "visits": visits,
+        "value": value,
+        "data": objective_values,
+        "best_qc": best_node.state.circuit,
+    }

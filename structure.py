@@ -1,9 +1,12 @@
-import random
+from itertools import combinations
 import math
-import numpy as np
+import random
 from typing import Callable, Dict, Tuple, Union
+
+import numpy as np
 from qiskit import QuantumCircuit, QuantumRegister
-from qiskit.circuit.library import RYGate, RXGate, RZGate, HGate, CXGate
+from qiskit.circuit import Qubit
+from qiskit.circuit.library import CXGate, HGate, RXGate, RYGate, RZGate
 from qiskit.quantum_info import Operator
 
 
@@ -105,8 +108,258 @@ class GateSet:
         else:
             raise NotImplementedError
         self.pool = gates
+        
+def get_add_options(quantum_circuit: QuantumCircuit, gate: str = None, max_depth: int = 10) -> list: 
+    """gets a list of possible add operations from the quantum circuit
 
+    Args:
+        quantum_circuit (QuantumCircuit): the quantum circuit to be expanded
+        gate (str, optional): If specified, only gives the adds for that gate. If None, 
+        gives the adds for every single gate. Defaults to None.
+    
+    returns: 
+        a non-randomized list of tuples that contain the gate to add and its quantum bit:
+        [('rx',Qubit1),('cx',Qubit1,Qubit2),..., ('ry',Qubit3)]
+    """
+    add_options = []
+    if quantum_circuit.depth() > max_depth:
+        return add_options
 
+    gates = [gate] if gate else ['cx', 'rx', 'ry', 'rz']
+    for gate in gates:
+        if gate == 'cx':
+            add_options = add_options + [('cx',) + pair for pair in combinations(quantum_circuit.qubits, 2)]  
+        else:
+            for qbit in quantum_circuit.qubits:
+                add_options.append((gate, qbit)) 
+    return add_options
+
+def get_delete_options(qc: QuantumCircuit) -> list:
+    """gets a list of possible delete operations from the quantum circuit
+
+    Args:
+        quantum_circuit (QuantumCircuit): quantum circuit to be deleted from
+
+    Returns:
+        a nonrandom list with all possible positions of the gate to be deleted
+        eg: [1,2,3,4]
+    """
+    return list(range(len(qc.data)))
+
+def get_swap_options(qc: QuantumCircuit, gate: str = None) -> list:
+    """
+        Gets a list of possible swap operations from the quantum circuit
+
+        Args:
+            qc (QuantumCircuit): The quantum circuit to be modified
+            gate (str, optional): If specified, only gives the swaps for that gate. If None, 
+            gives the swaps for every single gate. Defaults to None.
+
+        Returns:
+            list: A non-randomized list of tuples that contain the gate to swap and the position to swap it with:
+            [('rx', 1), ('cx', 2), ..., ('ry', 3)]
+        """
+    swap_options = []
+    gates = [gate] if gate else ['cx', 'rx', 'ry', 'rz']
+    for gate in gates:
+        for position in range(len(qc.data)):
+            swap_options.append((gate,position))
+    return swap_options
+
+def perform_action(qc: QuantumCircuit, action: str, instructions: list) -> QuantumCircuit:
+    match action:
+        case "add":
+            return perform_add(qc, instructions)
+        case "swap":
+            return perform_swap(qc, instructions)
+        case "delete":
+            return perform_delete(qc, instructions)
+        case "change": 
+            # TODO: Implement change
+            pass
+        
+            
+            
+
+def perform_add(qc: QuantumCircuit, instructions: list) -> QuantumCircuit:  
+    """adds a gate to the quantum circuit given the instructions
+
+    Args:
+        qc (QuantumCircuit): the quantum circuit to be modified
+        instructions (list): the instructions to add the gate,
+                             (gate, qubit1, qubit2) for cx, (gate, qubit) for single qubit gates
+    Returns:
+        QuantumCircuit: the modified quantum circuit
+    """
+    qc = qc.copy()
+    gate = instructions[0]
+    qubit = instructions[1]
+    
+    angle = 2 * math.pi * random.random() # get a random angle for parameterized gates
+    gate_map = {
+        'rx': RXGate(angle),
+        'ry': RYGate(angle),
+        'rz': RZGate(angle)
+    }
+    if instructions[0] == 'cx':
+        qubit2 = instructions[2]
+        qc.cx(qubit,qubit2)
+    else:
+        qc.append(gate_map[gate], [qubit])
+    return qc
+        
+def perform_swap(quantum_circuit: QuantumCircuit, instructions: list) -> QuantumCircuit:
+    """swaps a gate in the quantum circuit with a new gate given the instructions
+
+    Args:
+        qc (QuantumCircuit): the quantum circuit to be modified
+        instructions (list): the instructions to swap the gate, (new_gate, position)
+
+    Returns:
+        QuantumCircuit: the modified quantum circuit
+    """
+    gate = instructions[0]
+    position = instructions[1]
+    qc = quantum_circuit.copy()
+    # TODO: I think we should discuss the qubit selection here. Should it not be the same as the gate removed?
+    qubits = random.sample([i for i in range(len(qc.qubits))], k=2)
+    angle = 2 * math.pi * random.random()
+    if gate == 'cx':
+        qc.cx(qubits[0], qubits[1])
+    else:
+        gate_map = {
+            'ry': RYGate(angle),
+            'rx': RXGate(angle),
+            'rz': RZGate(angle),
+        }
+        gate = gate_map.get(gate)
+        if gate:
+            qc.append(gate, [qubits[0]])
+    gate_to_add = qc.data[-1]
+    qc = quantum_circuit.copy() 
+    gate_to_remove = qc.data[position]
+    qc.data[position] = gate_to_remove.replace(gate_to_add.operation, gate_to_add.qubits, gate_to_add.clbits)
+    return qc
+    
+def perform_delete(qc: QuantumCircuit, position: int) -> QuantumCircuit:
+    """deletes a gate from the quantum circuit given the instructions
+
+    Args:
+        qc (QuantumCircuit): the quantum circuit to be modified
+        instructions (list): the instructions to delete the gate, (position)
+
+    Returns:
+        QuantumCircuit: the modified quantum circuit
+    """
+    qc = qc.copy()
+    qc.data.remove(qc.data[position])
+    return qc
+
+def get_all_adds(quantum_circuit: QuantumCircuit, grouped: bool = False):
+    """ Gets all prossible continuous additions """
+    possible_circuits = {}
+    for gate in ['cx', 'rx', 'ry', 'rz']:
+        possible_circuits[f"add_{gate}"] = get_adds_for_gate(quantum_circuit, gate)
+    return possible_circuits if grouped else [circuit for circuits in possible_circuits.values() for circuit in circuits]
+
+def get_adds_for_gate(quantum_circuit: QuantumCircuit, gate: str):
+    """ Gets all prossible continuous additions for a specific gate """
+    possible_circuits = [] 
+
+    if gate == 'cx':
+        for qubit1 in quantum_circuit.qubits:
+            for qubit2 in quantum_circuit.qubits:
+                if qubit1 is not qubit2:
+                    qc = quantum_circuit.copy()
+                    qc.cx(qubit1, qubit2)
+                    possible_circuits.append(qc)
+    else:
+        angle = 2 * math.pi * random.random()
+        gate_map = {
+            'rx': RXGate(angle),
+            'ry': RYGate(angle),
+            'rz': RZGate(angle),
+        }
+        for qubit in quantum_circuit.qubits:
+            g = gate_map.get(gate)
+            if g:
+                qc = quantum_circuit.copy()
+                qc.append(g, [qubit])
+                possible_circuits.append(qc)
+    return possible_circuits
+
+def get_all_deletes(quantum_circuit: QuantumCircuit):
+    """ Gets all prossible deletions """
+    possible_circuits = []
+    qc = quantum_circuit.copy()
+    for position, gate in enumerate(qc.data):
+        qc = quantum_circuit.copy()
+        qc.data.remove(qc.data[position])
+        possible_circuits.append(qc)
+    return possible_circuits
+
+def get_all_parameter_changes(quantum_circuit: QuantumCircuit):
+    """ Gets one possible parameter change for each changeable quantum gate """
+    possible_circuits = {}
+    for position, gate in enumerate(quantum_circuit.data):
+        qc = quantum_circuit.copy()
+        if len(qc.data[position][0].params) == 0:
+            continue
+        qc.data[position][0].params[0] = qc.data[position][0].params[0] + random.gauss(0, 0.2)
+        possible_circuits[f"change_{position}"] = [qc]
+    return possible_circuits
+
+def get_parameter_change(quantum_circuit: QuantumCircuit, position: int = None):
+    """ Gets one possible parameter change """
+    if not position:
+        keys = []
+        for pos, gate in enumerate(quantum_circuit.data):
+            if len(quantum_circuit.data[pos][0].params) != 0:
+                keys.append(pos)
+        if len(keys) == 0:
+            return []
+        position = int(random.choice(keys))
+    
+    qc = quantum_circuit.copy()
+    if len(qc.data[position][0].params) == 0:
+        return []
+    qc.data[position][0].params[0] = qc.data[position][0].params[0] + random.gauss(0, 0.2)
+    return [qc]
+
+def get_all_swaps(quantum_circuit: QuantumCircuit, gates: list = ['cx', 'rx', 'ry', 'rz'], grouped: bool = False):
+    """ Gets all prossible swaps """
+    possible_circuits = {}
+    for gate in gates:
+        possible_circuits[f"swap_{gate}"] = get_swaps(quantum_circuit, gate)
+    return possible_circuits if grouped else [circuit for circuits in possible_circuits.values() for circuit in circuits]
+
+def get_swaps(quantum_circuit: QuantumCircuit, choice: str):
+    possible_circuits = []
+    
+    qc = quantum_circuit.copy()
+    qubits = random.sample([i for i in range(len(qc.qubits))], k=2)
+    angle = 2 * math.pi * random.random()
+    if choice == 'cx':
+        qc.cx(qubits[0], qubits[1])
+    else:
+        gate_map = {
+            'ry': RYGate(angle),
+            'rx': RXGate(angle),
+            'rz': RZGate(angle),
+        }
+        gate = gate_map.get(choice)
+        if gate:
+            qc.append(gate, [qubits[0]])
+    gate_to_add = qc.data[-1]
+
+    for position, gate in enumerate(quantum_circuit.data):
+        qc = quantum_circuit.copy()
+        gate_to_remove = qc.data[position]
+        qc.data[position] = gate_to_remove.replace(gate_to_add.operation, gate_to_add.qubits, gate_to_add.clbits)
+        possible_circuits.append(qc)
+
+    return possible_circuits
+        
 def actions_on_circuit(action_chosen: str, gate_set: GateSet) -> Callable[
     [QuantumCircuit], Union[QuantumCircuit, None]]:
     """
@@ -195,10 +448,10 @@ def actions_on_circuit(action_chosen: str, gate_set: GateSet) -> Callable[
             if check > 2*n:
                 return None
         gate_to_change = qc.data[position][0]
-        qc.data[position][0].params[0] = gate_to_change.params[0] + random.uniform(0, 0.2)
+        qc.data[position][0].params[0] = gate_to_change.params[0] + random.gauss(0, 0.2)
         return qc
 
-    def stop()-> str:
+    def stop(quantum_circuit)-> str:
         """ Marks the node as terminal"""
         return 'stop'
 
@@ -240,9 +493,9 @@ def get_action_from_str(input_string, gate_set):
     else:
         return "Invalid method name"
 
-
 def check_equivalence(qc1, qc2):
     """ It returns a boolean variable. True if the two input quantum circuits are equivalent (same matrix)eqi"""
     Op1 = Operator(qc1)
     Op2 = Operator(qc2)
     return Op1.equiv(Op2)
+  
